@@ -77,9 +77,10 @@ void i2c_slave_init(void)
     gpio_set_function(PIN_PUPPET_SCL, GPIO_FUNC_I2C);
     gpio_pull_up(PIN_PUPPET_SCL);
 
-    self.i2c->hw->intr_mask = I2C_IC_INTR_MASK_M_RD_REQ_BITS
-                            | I2C_IC_INTR_MASK_M_RX_FULL_BITS
-                            | I2C_IC_INTR_MASK_M_TX_ABRT_BITS;
+    // INTR_MASK is active-low: write 0 to enable, 1 to mask
+    self.i2c->hw->intr_mask &= ~(I2C_IC_INTR_MASK_M_RD_REQ_BITS
+                               | I2C_IC_INTR_MASK_M_RX_FULL_BITS
+                               | I2C_IC_INTR_MASK_M_TX_ABRT_BITS);
 
     int irq_num = I2C0_IRQ + i2c_hw_index(self.i2c);
     irq_set_exclusive_handler(irq_num, irq_handler);

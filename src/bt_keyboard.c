@@ -2,6 +2,7 @@
 #include "reg.h"
 #include "fifo.h"
 #include "interrupt.h"
+#include "pins.h"
 
 #include <btstack.h>
 #include <pico/cyw43_arch.h>
@@ -310,6 +311,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel,
         case HCI_EVENT_DISCONNECTION_COMPLETE:
             printf("Disconnected\n");
             connected = false;
+            cyw43_arch_gpio_put(PICO_W_LED, 0);
             has_prev_report = false;
             has_target = false;
             scanning = true;
@@ -322,6 +324,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel,
                 if (hid_status == ERROR_CODE_SUCCESS) {
                     printf("HID service connected!\n");
                     connected = true;
+                    cyw43_arch_gpio_put(PICO_W_LED, 1);
                 } else {
                     printf("HID service connect failed: 0x%02x\n", hid_status);
                     gap_disconnect(le_connection_handle);
@@ -332,6 +335,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel,
         case GATTSERVICE_SUBEVENT_HID_SERVICE_DISCONNECTED:
             printf("HID service disconnected\n");
             connected = false;
+            cyw43_arch_gpio_put(PICO_W_LED, 0);
             has_prev_report = false;
             break;
 
@@ -348,6 +352,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel,
                             if (status == ERROR_CODE_SUCCESS) {
                                 printf("HID service connected!\n");
                                 connected = true;
+                                cyw43_arch_gpio_put(PICO_W_LED, 1);
                             } else {
                                 printf("HID service connect failed: 0x%02x\n", status);
                                 gap_disconnect(le_connection_handle);
@@ -355,6 +360,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel,
                         } else if (subevent == GATTSERVICE_SUBEVENT_HID_SERVICE_DISCONNECTED) {
                             printf("HID service disconnected\n");
                             connected = false;
+                            cyw43_arch_gpio_put(PICO_W_LED, 0);
                             has_prev_report = false;
                         } else if (subevent == GATTSERVICE_SUBEVENT_HID_REPORT) {
                             const uint8_t *report = gattservice_subevent_hid_report_get_report(packet);
