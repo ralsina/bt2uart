@@ -1,5 +1,4 @@
 #include "bt_keyboard.h"
-#include "reg.h"
 
 #include <btstack.h>
 #include <pico/cyw43_arch.h>
