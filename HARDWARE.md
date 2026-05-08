@@ -6,7 +6,7 @@ over UART to a host (e.g. another Pico, ESP8266, etc.).
 ## How It Works
 
 ```
-BLE Keyboard  ──[Bluetooth LE]──>  Pico W (bt2i2c)
+BLE Keyboard  ──[Bluetooth LE]──>  Pico W (bt2uart)
                                       │
                                       │ UART1 (GP4 TX, GP5 RX, 115200 baud)
                                       │ Frame: [0xFE] [8-byte HID report]
@@ -20,7 +20,7 @@ BLE Keyboard  ──[Bluetooth LE]──>  Pico W (bt2i2c)
 
 ## Wiring
 
-### Sender (Pico W running `bt2i2c`)
+### Sender (Pico W running `bt2uart`)
 
 | Sender Pico W  | Connect to       | Pin |
 |----------------|------------------|-----|
@@ -45,8 +45,8 @@ Both Picos can be powered and debugged via their own USB cables simultaneously.
 
 ### Sender
 ```sh
-cd build && cmake .. && make bt2i2c
-# Flash build/src/bt2i2c.uf2 to Pico W
+cd build && cmake .. && make bt2uart
+# Flash build/src/bt2uart.uf2 to Pico W
 ```
 
 ### Receiver

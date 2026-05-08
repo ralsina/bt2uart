@@ -1,9 +1,9 @@
-add_executable(bt2i2c
+add_executable(bt2uart
     main.c
     bt_keyboard.c
 )
 
-target_include_directories(bt2i2c PRIVATE
+target_include_directories(bt2uart PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${PICO_SDK_PATH}/lib/btstack/src
     ${PICO_SDK_PATH}/lib/btstack/platform/embedded
@@ -12,7 +12,7 @@ target_include_directories(bt2i2c PRIVATE
     ${PICO_SDK_PATH}/lib/btstack/3rd-party/bluedroid/decoder/include
 )
 
-target_link_libraries(bt2i2c
+target_link_libraries(bt2uart
     pico_stdlib
     pico_cyw43_arch_none
     pico_btstack_cyw43
@@ -20,6 +20,6 @@ target_link_libraries(bt2i2c
     hardware_uart
 )
 
-pico_enable_stdio_uart(bt2i2c 1)
-pico_enable_stdio_usb(bt2i2c 1)
-pico_add_extra_outputs(bt2i2c)
+pico_enable_stdio_uart(bt2uart 1)
+pico_enable_stdio_usb(bt2uart 1)
+pico_add_extra_outputs(bt2uart)

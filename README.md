@@ -9,10 +9,10 @@ and logs the key events over USB serial.
 ## Quick Start
 
 ```sh
-cd build && cmake .. && make bt2i2c pico_receiver
+cd build && cmake .. && make bt2uart pico_receiver
 ```
 
-Flash `build/src/bt2i2c.uf2` to Pico W (sender), and
+Flash `build/src/bt2uart.uf2` to Pico W (sender), and
 `build/host/pico_receiver/pico_receiver.uf2` to another Pico (receiver).
 
 Wire sender GP4 → receiver GP5, connect GND ↔ GND, open USB serial on
