@@ -1,6 +1,10 @@
 #include "fifo.h"
 #include <hardware/sync.h>
 
+#ifndef PICO_SPINLOCK_ID_0
+#define PICO_SPINLOCK_ID_0 0
+#endif
+
 static struct {
     struct fifo_item fifo[KEY_FIFO_SIZE];
     uint8_t count;

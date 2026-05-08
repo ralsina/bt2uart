@@ -1,5 +1,7 @@
 #include "bt_keyboard.h"
 #include "reg.h"
+#include "fifo.h"
+#include "interrupt.h"
 
 #include <btstack.h>
 #include <pico/cyw43_arch.h>
@@ -140,17 +142,18 @@ static uint8_t find_in_report(const uint8_t *report, uint8_t code)
 
 static void inject_key(char key, enum key_state state)
 {
-    const char *s;
-    switch (state) {
-        case KEY_STATE_PRESSED:  s = "PRESSED";  break;
-        case KEY_STATE_HOLD:     s = "HOLD";     break;
-        case KEY_STATE_RELEASED: s = "RELEASED"; break;
-        default:                 s = "IDLE";     break;
+    struct fifo_item item = { .key = key, .state = state };
+
+    if (!fifo_enqueue(item)) {
+        if (reg_is_bit_set(REG_ID_CFG, CFG_OVERFLOW_ON)) {
+            fifo_flush();
+            fifo_enqueue_force(item);
+            if (reg_is_bit_set(REG_ID_CFG, CFG_OVERFLOW_INT)) {
+                reg_set_bit(REG_ID_INT, INT_OVERFLOW);
+            }
+        }
     }
-    if (key >= 0x20 && key <= 0x7E)
-        printf("key: '%c' (0x%02x) %s\n", key, (uint8_t)key, s);
-    else
-        printf("key: 0x%02x %s\n", (uint8_t)key, s);
+    interrupt_pulse();
 }
 
 static char hid_code_to_char(uint8_t code, uint8_t modifiers, bool capslock)

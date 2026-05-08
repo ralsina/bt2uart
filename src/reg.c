@@ -1,7 +1,7 @@
 #include "reg.h"
 #include "fifo.h"
-#include "board.h"
 #include "interrupt.h"
+#include <pico/bootrom.h>
 #include <pico/stdlib.h>
 #include <hardware/sync.h>
 

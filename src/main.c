@@ -4,6 +4,9 @@
 #include <stdio.h>
 
 #include "bt_keyboard.h"
+#include "i2c_slave.h"
+#include "reg.h"
+#include "interrupt.h"
 #include "pins.h"
 
 static btstack_timer_source_t heartbeat;
@@ -41,6 +44,11 @@ int main(void)
 
     btstack_main(0, NULL);
     printf("btstack_main returned\n");
+
+    reg_init();
+    interrupt_init();
+    i2c_slave_init();
+    printf("I2C slave initialized (address 0x%02x)\n", reg_get_value(REG_ID_ADR));
 
     heartbeat.process = &heartbeat_handler;
     btstack_run_loop_set_timer(&heartbeat, 1000);
