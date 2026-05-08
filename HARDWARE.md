@@ -1,69 +1,93 @@
-# Hardware Wiring
+# BT2UART Bridge
 
-## Pico W to I2C Host
+A Pico W that connects to a BLE HID keyboard and forwards keystrokes
+over UART to a host (e.g. another Pico, ESP8266, etc.).
+
+## How It Works
 
 ```
-Host I2C Port          Pico W         Pico W Pin Function
-──────────────────────────────────────────────────────────
-3.3V (VCC)      ─────  Pin 39 (VSYS)  Power input (via SMPS)
-GND             ─────  Pin 38 (GND)   Common ground
-SDA             ─────  Pin 6  (GP4)   I2C data
-SCL             ─────  Pin 7  (GP5)   I2C clock
+BLE Keyboard  ──[Bluetooth LE]──>  Pico W (bt2i2c)
+                                      │
+                                      │ UART1 (GP4 TX, GP5 RX, 115200 baud)
+                                      │ Frame: [0xFE] [8-byte HID report]
+                                      ▼
+                                  Host (e.g. Pico Receiver)
+                                      │
+                                      │ USB serial
+                                      ▼
+                              Your computer (minicom/putty)
 ```
 
-> Note: GP0 is used by the Pico W's CYW43 SPI bus for BT/Wi-Fi. The I2C
-> slave must use GP4/GP5 (or other free pins) to avoid BT connectivity loss.
+## Wiring
+
+### Sender (Pico W running `bt2i2c`)
+
+| Sender Pico W  | Connect to       | Pin |
+|----------------|------------------|-----|
+| GP4 (UART1 TX) | Host RX          | 6   |
+| GP5 (UART1 RX) | Host TX (opt.)   | 7   |
+| GND            | Host GND         | 38  |
+| USB            | Computer (debug) |     |
+
+### Receiver (Pico running `pico_receiver`)
+
+| Receiver Pico  | Connect to       | Pin |
+|----------------|------------------|-----|
+| GP5 (UART1 RX) | Sender TX (GP4)  | 7   |
+| GND            | Sender GND       | 38  |
+| USB            | Computer (log)   |     |
+
+**Minimal connection**: sender GP4 → receiver GP5 + common GND (2 wires).
+
+Both Picos can be powered and debugged via their own USB cables simultaneously.
+
+## Building & Flashing
+
+### Sender
+```sh
+cd build && cmake .. && make bt2i2c
+# Flash build/src/bt2i2c.uf2 to Pico W
+```
+
+### Receiver
+```sh
+cd build && cmake .. && make pico_receiver
+# Flash build/host/pico_receiver/pico_receiver.uf2 to Pico
+```
+
+## UART Protocol
+
+Each HID report from the keyboard is sent as a 9-byte frame:
+
+```
+Byte 0:     0xFE  (sync marker)
+Byte 1:     Modifier bits (LCtrl=0x01, LShift=0x02, LAlt=0x04, LGui=0x08,
+                           RCtrl=0x10, RShift=0x20, RAlt=0x40, RGui=0x80)
+Byte 2:     Reserved (always 0)
+Bytes 3-8:  Key codes (up to 6 simultaneous keys, 0 = empty)
+```
+
+115200 baud, 8N1. The receiver syncs on 0xFE — if a byte is lost, the
+next 0xFE re-syncs (no checksum needed).
+
+## Testing
+
+1. Flash both Picos with their respective firmware
+2. Wire sender GP4 → receiver GP5 + GND ↔ GND
+3. Connect receiver USB to computer, open serial monitor (115200 baud)
+4. Connect sender USB to computer, open second serial monitor for debug
+5. The sender scans for BLE HID keyboards — press the keyboard's pair button
+6. After pairing, keystrokes appear on the receiver's serial output:
+   ```
+   RAW: 00 00 04 00 00 00 00 00
+   KEY press: A
+   RAW: 00 00 00 00 00 00 00 00
+   KEY release: A
+   ```
 
 ## Notes
 
-- **Power**: The Pico W is powered from the host's 3.3V rail via VSYS (Pin 39).
-  VSYS feeds the onboard SMPS regulator which handles BLE TX current bursts (~200mA).
-- **USB**: USB can be connected simultaneously for serial debug. The VSYS and USB
-  power paths are diode-isolated — the Pico draws from whichever source is active.
-- **Ground**: A common ground connection is required for correct I2C voltage levels.
-- **I2C pull-ups**: Pull-up resistors are enabled internally via software
-  (`gpio_pull_up`). Ensure the host does the same or provides external pull-ups.
-- **INT pin (GP2)**: Not connected — the host does not have an interrupt input.
-  The host must poll `REG_ID_KEY` to check for available keystrokes.
-- **I2C slave address**: Default is `0x1F`, configurable via `REG_ID_ADR` (0x12).
-
-## I2C Protocol (i2c-puppet)
-
-The Pico acts as an I2C slave implementing the i2c-puppet register protocol.
-
-### Read a register
-```
-Master: [START] [0x1F << 1 | W] [reg_addr] [STOP]
-Master: [START] [0x1F << 1 | R] [data_byte] [STOP]
-```
-
-### Write a register
-```
-Master: [START] [0x1F << 1 | W] [reg_addr | 0x80] [data_byte] [STOP]
-```
-
-The MSB of the register address acts as a write flag (0x80 = write, 0x00 = read).
-
-### Key Registers
-
-| Address | Name | Access | Description |
-|---------|------|--------|-------------|
-| 0x01 | VER | R | Version (0x10 = v1.0) |
-| 0x02 | CFG | R/W | Configuration flags |
-| 0x03 | INT | R/W | Interrupt flags |
-| 0x04 | KEY | R | Key FIFO status (count + flags) |
-| 0x09 | FIF | R | Dequeue keystroke (2 bytes: state, key) |
-| 0x12 | ADR | R/W | I2C slave address |
-
-### KEY register (0x04)
-```
-Bit 0-4: FIFO count (0-31)
-Bit 5:   Capslock active
-Bit 6:   Numlock active
-```
-
-### FIF register (0x09) — read returns 2 bytes
-```
-Byte 0: key state (0=idle, 1=pressed, 2=hold, 3=released)
-Byte 1: key code (ASCII for regular keys, 0x9A-0x9D for modifiers)
-```
+- **GP0 conflict**: Pico W's CYW43 uses GP0 for SPI — do not use GP0/GP1
+  for UART. GP4/GP5 are safe.
+- **Power**: Each Pico powered via its own USB. Do not connect VSYS to host 3.3V.
+- **Baud rate**: 115200 — change `UART_BAUD` in `src/pins.h` if needed.

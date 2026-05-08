@@ -13,6 +13,6 @@ pico_sdk_init()
 add_subdirectory(src)
 add_subdirectory(host/pico_receiver)
 
-pico_set_program_name(bt2i2c "BT2I2C Bridge")
-pico_set_program_version(bt2i2c "0.1")
+pico_set_program_name(bt2i2c "BT2UART Bridge")
+pico_set_program_version(bt2i2c "0.2")
 pico_enable_stdio_uart(bt2i2c 1)

@@ -32,7 +32,7 @@ int main(void)
     // wait for USB serial to enumerate before first print
     sleep_ms(2000);
 
-    printf("BT2UART Bridge init...\n");
+    printf("BT2UART Bridge v0.2\n");
 
     // Init UART to host on GP4/TX GP5/RX
     uart_init(UART_ID, UART_BAUD);
