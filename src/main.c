@@ -12,9 +12,18 @@ static btstack_timer_source_t heartbeat;
 static void heartbeat_handler(btstack_timer_source_t *ts)
 {
     static int count = 0;
-    cyw43_arch_gpio_put(PICO_W_LED, count & 1);
     printf("[%d] alive\n", count++);
-    btstack_run_loop_set_timer(&heartbeat, 5000);
+
+    // Turn LED on only when keyboard is connected, off otherwise
+    extern bool bt_keyboard_is_connected(void);
+    bool connected = bt_keyboard_is_connected();
+    cyw43_arch_gpio_put(PICO_W_LED, connected ? 1 : 0);
+
+    // If we're in IDLE state (disconnected and waiting), restart scanning
+    extern bool bt_keyboard_reconnect_if_needed(void);
+    bt_keyboard_reconnect_if_needed();
+
+    btstack_run_loop_set_timer(&heartbeat, 3000);
     btstack_run_loop_add_timer(&heartbeat);
 }
 
@@ -50,10 +59,11 @@ int main(void)
     printf("btstack_main returned\n");
 
     heartbeat.process = &heartbeat_handler;
-    btstack_run_loop_set_timer(&heartbeat, 1000);
+    btstack_run_loop_set_timer(&heartbeat, 3000);
     btstack_run_loop_add_timer(&heartbeat);
 
-    pulse_led();
+    // Make sure LED starts off
+    cyw43_arch_gpio_put(PICO_W_LED, 0);
 
     btstack_run_loop_execute();
 

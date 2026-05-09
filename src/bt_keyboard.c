@@ -126,6 +126,32 @@ static bool scanning = false;
 static bool capslock = false;
 static bool fn_pressed = false;
 static bool hid_descriptor_available = false;
+static bd_addr_t identity_addr;  // Store the keyboard's identity address
+static bool has_identity_addr = false;
+
+// Connection state machine
+typedef enum {
+    SM_STATE_IDLE = 0,
+    SM_STATE_SCANNING,
+    SM_STATE_CONNECTING,
+    SM_STATE_PAIRING,
+    SM_STATE_HID_CONNECTING,
+    SM_STATE_CONNECTED,
+    SM_STATE_DISCONNECTING,
+    SM_STATE_RECONNECT_WAIT
+} sm_state_t;
+
+static const char* sm_state_names[] = {
+    "IDLE", "SCANNING", "CONNECTING", "PAIRING", "HID_CONNECTING", "CONNECTED", "DISCONNECTING", "RECONNECT_WAIT"
+};
+
+static sm_state_t current_sm_state = SM_STATE_IDLE;
+
+static void set_sm_state(sm_state_t new_state) {
+    if (current_sm_state == new_state) return;
+    printf("[SM_STATE] %s -> %s\n", sm_state_names[current_sm_state], sm_state_names[new_state]);
+    current_sm_state = new_state;
+}
 
 static btstack_packet_callback_registration_t hci_event_callback_registration;
 static btstack_packet_callback_registration_t sm_event_callback_registration;
@@ -375,6 +401,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel,
                     gap_set_scan_parameters(1, 0x100, 0x50);
                     gap_start_scan();
                     scanning = true;
+                    set_sm_state(SM_STATE_SCANNING);
                 }
             }
             break;
@@ -403,6 +430,9 @@ static void packet_handler(uint8_t packet_type, uint16_t channel,
                     printf("gap_connect failed: 0x%02x, rescanning\n", err);
                     gap_start_scan();
                     scanning = true;
+                    set_sm_state(SM_STATE_SCANNING);
+                } else {
+                    set_sm_state(SM_STATE_CONNECTING);
                 }
             }
             break;
@@ -414,23 +444,41 @@ static void packet_handler(uint8_t packet_type, uint16_t channel,
                 if (status == ERROR_CODE_SUCCESS) {
                     le_connection_handle = hci_subevent_le_connection_complete_get_connection_handle(packet);
                     hci_subevent_le_connection_complete_get_peer_address(packet, event_addr);
-                    printf("LE connected to %s, handle 0x%04x (waiting for pairing)\n",
+                    printf("LE connected to %s, handle 0x%04x\n",
                         bd_addr_to_str(event_addr), le_connection_handle);
+
+                    // Check if this device was already paired/encrypted
+                    // If it's a reconnection, encryption will start automatically
+                    // If it's a new device, we need to initiate pairing
+                    // We'll wait to see if we get encryption events or pairing events
+
+                    set_sm_state(SM_STATE_PAIRING);
                 } else {
                     printf("LE connection failed: status 0x%02x\n", status);
                     scanning = true;
                     gap_start_scan();
+                    set_sm_state(SM_STATE_SCANNING);
                 }
             }
             break;
 
         case HCI_EVENT_DISCONNECTION_COMPLETE:
-            printf("Disconnected\n");
-            connected = false;
-            has_prev_report = false;
-            has_target = false;
-            scanning = true;
-            gap_start_scan();
+            {
+                uint8_t reason = hci_event_disconnection_complete_get_reason(packet);
+                printf("Disconnected (reason: 0x%02x) - resetting and waiting before rescan\n", reason);
+
+                // Reset all connection state to simulate a fresh start
+                connected = false;
+                has_prev_report = false;
+                has_target = false;
+                has_identity_addr = false;
+                le_connection_handle = HCI_CON_HANDLE_INVALID;
+
+                set_sm_state(SM_STATE_IDLE);
+
+                // Wait a bit before rescanning to let BT stack clean up
+                // We'll rely on the heartbeat timer to restart scanning
+            }
             break;
 
         case GATTSERVICE_SUBEVENT_HID_SERVICE_CONNECTED:
@@ -467,6 +515,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel,
                     }
 
                     connected = true;
+                    set_sm_state(SM_STATE_CONNECTED);
                 } else {
                     printf("HID service connect failed: 0x%02x\n", hid_status);
                     gap_disconnect(le_connection_handle);
@@ -566,11 +615,46 @@ static void sm_packet_handler(uint8_t packet_type, uint16_t channel,
                 HID_PROTOCOL_MODE_REPORT, &hids_cid);
             if (err != ERROR_CODE_SUCCESS) {
                 printf("hids_client_connect failed: 0x%02x\n", err);
+            } else {
+                set_sm_state(SM_STATE_HID_CONNECTING);
             }
         } else {
             printf("SM: pairing failed, status %u reason %u\n",
                 sm_event_pairing_complete_get_status(packet),
                 sm_event_pairing_complete_get_reason(packet));
+        }
+        break;
+    case SM_EVENT_REENCRYPTION_STARTED:
+        printf("SM: re-encryption started (device is reconnecting with existing bond)\n");
+        break;
+    case SM_EVENT_REENCRYPTION_COMPLETE:
+        printf("SM: re-encryption complete, connecting to HID service\n");
+        uint8_t err = hids_client_connect(le_connection_handle, packet_handler,
+            HID_PROTOCOL_MODE_REPORT, &hids_cid);
+        if (err != ERROR_CODE_SUCCESS) {
+            printf("hids_client_connect failed: 0x%02x\n", err);
+        } else {
+            set_sm_state(SM_STATE_HID_CONNECTING);
+        }
+        break;
+    case SM_EVENT_IDENTITY_RESOLVING_SUCCEEDED:
+        {
+            printf("SM: Identity resolving succeeded - storing identity address\n");
+            bd_addr_t identity;
+            sm_event_identity_resolving_succeeded_get_identity_address(packet, identity);
+            bd_addr_copy(identity_addr, identity);
+            has_identity_addr = true;
+            printf("Identity address: %s\n", bd_addr_to_str(identity_addr));
+        }
+        break;
+    case SM_EVENT_IDENTITY_CREATED:
+        {
+            printf("SM: Identity created - storing identity address\n");
+            bd_addr_t identity;
+            sm_event_identity_created_get_identity_address(packet, identity);
+            bd_addr_copy(identity_addr, identity);
+            has_identity_addr = true;
+            printf("Identity address: %s\n", bd_addr_to_str(identity_addr));
         }
         break;
     default:
@@ -590,8 +674,11 @@ int btstack_main(int argc, const char *argv[])
     l2cap_init();
     sm_init();
 
+    // Initialize LE device database for bonding storage
+    le_device_db_init();
+
     sm_set_io_capabilities(IO_CAPABILITY_NO_INPUT_NO_OUTPUT);
-    sm_set_authentication_requirements(SM_AUTHREQ_BONDING | SM_AUTHREQ_SECURE_CONNECTION);
+    sm_set_authentication_requirements(SM_AUTHREQ_BONDING);
 
     gatt_client_init();
     hids_client_init(hid_descriptor_storage, HID_DESCRIPTOR_STORAGE_SIZE);
@@ -610,6 +697,21 @@ int btstack_main(int argc, const char *argv[])
 
 void bt_keyboard_init(void)
 {
+}
+
+bool bt_keyboard_reconnect_if_needed(void)
+{
+    // If we're in IDLE state and not scanning, start scanning
+    extern sm_state_t current_sm_state;
+    if (current_sm_state == SM_STATE_IDLE && !scanning) {
+        printf("[RECONNECT] Time to rescan for keyboard\n");
+        gap_set_scan_parameters(1, 0x100, 0x50);
+        gap_start_scan();
+        scanning = true;
+        set_sm_state(SM_STATE_SCANNING);
+        return true;
+    }
+    return false;
 }
 
 bool bt_keyboard_is_connected(void)

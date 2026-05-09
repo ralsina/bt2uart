@@ -18,5 +18,6 @@ enum key_state
 
 void bt_keyboard_init(void);
 bool bt_keyboard_is_connected(void);
+bool bt_keyboard_reconnect_if_needed(void);
 
 int btstack_main(int argc, const char *argv[]);
