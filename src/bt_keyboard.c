@@ -1,6 +1,7 @@
 #include "bt_keyboard.h"
 
 #include <btstack.h>
+#include <btstack_hid_parser.h>
 #include <pico/cyw43_arch.h>
 #include <pico/btstack_cyw43.h>
 #include <ble/gatt-service/hids_client.h>
@@ -70,6 +71,7 @@
 #define HID_KEY_SLASH       0x38
 #define HID_KEY_CAPSLOCK    0x39
 #define HID_KEY_DELETE      0x4C
+#define HID_KEY_FN          0x9D  // Fn key modifier
 
 #define HID_MOD_LCTRL  0x01
 #define HID_MOD_LSHIFT 0x02
@@ -79,6 +81,7 @@
 #define HID_MOD_RSHIFT 0x20
 #define HID_MOD_RALT   0x40
 #define HID_MOD_RGUI   0x80
+#define HID_MOD_FN     0x100 // Virtual modifier for Fn key tracking
 
 #define HID_REPORT_SIZE 8
 
@@ -110,6 +113,7 @@ static const uint8_t hid_to_ascii[0x53][2] = {
 
 #define HID_DESCRIPTOR_STORAGE_SIZE 300
 static uint8_t hid_descriptor_storage[HID_DESCRIPTOR_STORAGE_SIZE];
+static uint16_t hid_descriptor_len = 0;
 static uint16_t hids_cid = 0;
 static hci_con_handle_t le_connection_handle = HCI_CON_HANDLE_INVALID;
 
@@ -120,6 +124,8 @@ static bd_addr_t target_addr;
 static bool has_target = false;
 static bool scanning = false;
 static bool capslock = false;
+static bool fn_pressed = false;
+static bool hid_descriptor_available = false;
 
 static btstack_packet_callback_registration_t hci_event_callback_registration;
 static btstack_packet_callback_registration_t sm_event_callback_registration;
@@ -140,6 +146,40 @@ static uint8_t find_in_report(const uint8_t *report, uint8_t code)
     return 0;
 }
 
+static const char* get_key_name_for_code(uint8_t code) {
+    // Function keys
+    switch (code) {
+        case 0x3a: return "F1";
+        case 0x3b: return "F2";
+        case 0x3c: return "F3";
+        case 0x3d: return "F4";
+        case 0x3e: return "F5";
+        case 0x3f: return "F6";
+        case 0x40: return "F7";
+        case 0x41: return "F8";
+        case 0x42: return "F9";
+        case 0x43: return "F10";
+        case 0x44: return "F11";
+        case 0x45: return "F12";
+        // Special keys
+        case 0x28: return "Enter";
+        case 0x29: return "Escape";
+        case 0x2a: return "Backspace";
+        case 0x2b: return "Tab";
+        case 0x2c: return "Space";
+        case 0x4a: return "Home";
+        case 0x4b: return "PageUp";
+        case 0x4c: return "Delete";
+        case 0x4d: return "End";
+        case 0x4e: return "PageDown";
+        case 0x4f: return "Right";
+        case 0x50: return "Left";
+        case 0x51: return "Down";
+        case 0x52: return "Up";
+        default: return NULL;
+    }
+}
+
 static void inject_key(char key, enum key_state state)
 {
     const char *s;
@@ -149,10 +189,15 @@ static void inject_key(char key, enum key_state state)
         case KEY_STATE_RELEASED: s = "RELEASED"; break;
         default:                 s = "IDLE";     break;
     }
-    if (key >= 0x20 && key <= 0x7E)
+
+    const char* key_name = get_key_name_for_code((uint8_t)key);
+    if (key_name) {
+        printf("key: %s %s\n", key_name, s);
+    } else if (key >= 0x20 && key <= 0x7E) {
         printf("key: '%c' (0x%02x) %s\n", key, (uint8_t)key, s);
-    else
+    } else {
         printf("key: 0x%02x %s\n", (uint8_t)key, s);
+    }
 }
 
 static char hid_code_to_char(uint8_t code, uint8_t modifiers, bool capslock)
@@ -187,18 +232,74 @@ static void process_hid_report(const uint8_t *report_buf, uint16_t buf_len, uint
     uint8_t modifiers = report[0];
     uint8_t prev_mod = has_prev_report ? prev_report[0] : 0;
 
+    // Check for Fn key state (0x9D in the key array)
+    bool fn_now_pressed = find_in_report(report, HID_KEY_FN);
+    bool fn_was_pressed = has_prev_report && find_in_prev(HID_KEY_FN);
+    fn_pressed = fn_now_pressed;
+
+    // Handle Fn key combinations by converting them to function keys
+    uint8_t modified_report[HID_REPORT_SIZE];
+    memcpy(modified_report, report, HID_REPORT_SIZE);
+
+    if (fn_now_pressed && !fn_was_pressed) {
+        // Fn was just pressed, look for keys that should become function keys
+        for (int i = 2; i < HID_REPORT_SIZE; i++) {
+            if (report[i] >= 0x04 && report[i] <= 0x1D) {
+                // Letters A-Z: Handle potential Fn shortcuts
+                switch(report[i]) {
+                    case 0x04: modified_report[i] = 0x3A; break; // A+Fn -> F1
+                    case 0x05: modified_report[i] = 0x3B; break; // B+Fn -> F2
+                    case 0x06: modified_report[i] = 0x3C; break; // C+Fn -> F3
+                    case 0x07: modified_report[i] = 0x3D; break; // D+Fn -> F4
+                    case 0x08: modified_report[i] = 0x3E; break; // E+Fn -> F5
+                    case 0x09: modified_report[i] = 0x3F; break; // F+Fn -> F6
+                    case 0x0A: modified_report[i] = 0x40; break; // G+Fn -> F7
+                    case 0x0B: modified_report[i] = 0x41; break; // H+Fn -> F8
+                    case 0x0C: modified_report[i] = 0x42; break; // I+Fn -> F9
+                    case 0x0D: modified_report[i] = 0x43; break; // J+Fn -> F10
+                    case 0x0E: modified_report[i] = 0x44; break; // K+Fn -> F11
+                    case 0x0F: modified_report[i] = 0x45; break; // L+Fn -> F12
+                }
+            } else if (report[i] >= 0x1E && report[i] <= 0x27) {
+                // Numbers 1-0: Handle Fn+number -> function keys
+                switch(report[i]) {
+                    case 0x1E: modified_report[i] = 0x3A; break; // 1+Fn -> F1
+                    case 0x1F: modified_report[i] = 0x3B; break; // 2+Fn -> F2
+                    case 0x20: modified_report[i] = 0x3C; break; // 3+Fn -> F3
+                    case 0x21: modified_report[i] = 0x3D; break; // 4+Fn -> F4
+                    case 0x22: modified_report[i] = 0x3E; break; // 5+Fn -> F5
+                    case 0x23: modified_report[i] = 0x3F; break; // 6+Fn -> F6
+                    case 0x24: modified_report[i] = 0x40; break; // 7+Fn -> F7
+                    case 0x25: modified_report[i] = 0x41; break; // 8+Fn -> F8
+                    case 0x26: modified_report[i] = 0x42; break; // 9+Fn -> F9
+                    case 0x27: modified_report[i] = 0x43; break; // 0+Fn -> F10
+                }
+            }
+        }
+        // Remove Fn key from the report since we've processed it
+        for (int i = 2; i < HID_REPORT_SIZE; i++) {
+            if (modified_report[i] == HID_KEY_FN) {
+                modified_report[i] = 0;
+                break;
+            }
+        }
+    }
+
+    // Use the modified report for UART transmission and processing
+    const uint8_t *final_report = fn_pressed ? modified_report : report;
+
     printf("report: rid=%u mod=0x%02x keys=", report_id, modifiers);
     for (int i = 2; i < HID_REPORT_SIZE && i < len; i++) {
-        if (report[i]) printf("0x%02x ", report[i]);
+        if (final_report[i]) printf("0x%02x ", final_report[i]);
     }
     printf("\n");
 
-    // Send raw HID report over UART: 0xFE + 8 report bytes
+    // Send (possibly modified) HID report over UART: 0xFE + 8 report bytes
     uint8_t frame[9] = {0xFE};
-    memcpy(frame + 1, report, HID_REPORT_SIZE);
+    memcpy(frame + 1, final_report, HID_REPORT_SIZE);
     uart_write_blocking(UART_ID, frame, 9);
 
-    if (!find_in_prev(HID_KEY_CAPSLOCK) && find_in_report(report, HID_KEY_CAPSLOCK)) {
+    if (!find_in_prev(HID_KEY_CAPSLOCK) && find_in_report(final_report, HID_KEY_CAPSLOCK)) {
         capslock = !capslock;
         printf("capslock: %s\n", capslock ? "ON" : "OFF");
     }
@@ -218,9 +319,15 @@ static void process_hid_report(const uint8_t *report_buf, uint16_t buf_len, uint
     }
 
     for (int i = 2; i < HID_REPORT_SIZE; i++) {
-        uint8_t code = report[i];
+        uint8_t code = final_report[i];
         if (code == 0 || code == HID_KEY_CAPSLOCK) continue;
         if (has_prev_report && find_in_prev(code)) continue;
+
+        // Handle special keys directly (Enter, Escape, Backspace, Tab, Space, Function keys, Navigation keys, etc.)
+        if ((code >= 0x28 && code <= 0x2c) || (code >= 0x3a && code <= 0x65)) {
+            inject_key(code, KEY_STATE_PRESSED);
+            continue;
+        }
 
         uint8_t ch = hid_code_to_char(code, modifiers, capslock);
         if (ch == 0) continue;
@@ -233,6 +340,12 @@ static void process_hid_report(const uint8_t *report_buf, uint16_t buf_len, uint
             uint8_t code = prev_report[i];
             if (code == 0 || code == HID_KEY_CAPSLOCK) continue;
             if (find_in_report(report, code)) continue;
+
+            // Handle special keys directly (Enter, Escape, Backspace, Tab, Space, Function keys, Navigation keys, etc.)
+            if ((code >= 0x28 && code <= 0x2c) || (code >= 0x3a && code <= 0x65)) {
+                inject_key(code, KEY_STATE_RELEASED);
+                continue;
+            }
 
             uint8_t ch = hid_code_to_char(code, prev_mod, capslock);
             if (ch == 0) continue;
@@ -325,6 +438,34 @@ static void packet_handler(uint8_t packet_type, uint16_t channel,
                 uint8_t hid_status = gattservice_subevent_hid_service_connected_get_status(packet);
                 if (hid_status == ERROR_CODE_SUCCESS) {
                     printf("HID service connected!\n");
+
+                    // Try to get HID report descriptor - add debug info
+                    printf("Attempting to get HID descriptor, hids_cid=%u\n", hids_cid);
+
+                    const uint8_t *hid_descriptor = hids_client_descriptor_storage_get_descriptor_data(hids_cid, 0);
+                    printf("Descriptor pointer: %p\n", (void*)hid_descriptor);
+
+                    if (hid_descriptor) {
+                        hid_descriptor_len = hids_client_descriptor_storage_get_descriptor_len(hids_cid, 0);
+                        printf("HID descriptor available (%u bytes)\n", hid_descriptor_len);
+
+                        if (hid_descriptor_len > 0) {
+                            memcpy(hid_descriptor_storage, hid_descriptor,
+                                   hid_descriptor_len > HID_DESCRIPTOR_STORAGE_SIZE ? HID_DESCRIPTOR_STORAGE_SIZE : hid_descriptor_len);
+                            hid_descriptor_available = true;
+
+                            // Show first few bytes of descriptor
+                            printf("Descriptor first bytes: ");
+                            for (int i = 0; i < (hid_descriptor_len < 16 ? hid_descriptor_len : 16); i++) {
+                                printf("%02x ", hid_descriptor[i]);
+                            }
+                            printf("\n");
+                        }
+                    } else {
+                        printf("No HID descriptor available - using standard keyboard mappings\n");
+                        hid_descriptor_available = false;
+                    }
+
                     connected = true;
                 } else {
                     printf("HID service connect failed: 0x%02x\n", hid_status);
